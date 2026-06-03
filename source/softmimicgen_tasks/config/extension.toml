@@ -1,0 +1,23 @@
+[package]
+
+# Note: Semantic Versioning is used: https://semver.org/
+version = "0.1.0"
+
+# Description
+title = "SoftMimicGen Tasks"
+description="Task environments for deformable object manipulation with SoftMimicGen."
+repository = "https://softmimicgen.github.io/"
+category = "robotics"
+keywords = ["robotics", "deformable", "manipulation", "mimicgen", "data generation"]
+author = "Masoud Moghani"
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+"isaaclab_tasks" = {}
+
+[core]
+reloadable = false
+
+[[python.module]]
+name = "softmimicgen_tasks"

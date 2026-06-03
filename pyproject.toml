@@ -1,0 +1,99 @@
+[tool.isort]
+
+py_version = 311
+line_length = 120
+group_by_package = true
+
+# Files to skip
+skip_glob = ["docs/*", "logs/*", "_isaac_sim/*", ".vscode/*"]
+
+# Order of imports
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "ASSETS_FIRSTPARTY",
+    "FIRSTPARTY",
+    "EXTRA_FIRSTPARTY",
+    "TASK_FIRSTPARTY",
+    "LOCALFOLDER",
+]
+
+# Third-party libraries (permissive licenses)
+extra_standard_library = [
+    "numpy",
+    "h5py",
+    "torch",
+    "gymnasium",
+    "scipy",
+    "yaml",
+    "prettytable",
+    "toml",
+    "cv2",
+    "pinocchio",
+    "pink",
+    "robomimic",
+    "IPython",
+    "ipywidgets",
+    "rapprentice",
+]
+# Imports from Isaac Sim and Omniverse
+known_third_party = [
+    "isaacsim.core.api",
+    "isaacsim.replicator.common",
+    "omni.replicator.core",
+    "pxr",
+    "omni.kit.*",
+    "warp",
+    "carb",
+    "Semantics",
+]
+# Imports from Isaac Lab (external dependency)
+known_first_party = "isaaclab"
+known_assets_firstparty = [
+    "isaaclab_assets",
+    "softmimicgen_assets",
+]
+known_extra_firstparty = [
+    "isaaclab_mimic",
+    "isaaclab_ext",
+    "softmimicgen",
+]
+known_task_firstparty = [
+    "isaaclab_tasks",
+    "softmimicgen_tasks",
+]
+# Imports from the local folder
+known_local_folder = "config"
+
+[tool.pyright]
+
+include = ["source", "scripts"]
+exclude = [
+    "**/__pycache__",
+    "**/_isaac_sim",
+    "**/docs",
+    "**/logs",
+    ".git",
+    ".vscode",
+]
+
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+enableTypeIgnoreComments = true
+
+# Ignore missing imports since not all dependencies are available during static analysis
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+
+reportGeneralTypeIssues = "none"
+reportOptionalMemberAccess = "warning"
+reportPrivateUsage = "warning"
+
+
+[tool.codespell]
+skip = '*.usd,*.svg,*.png,_isaac_sim*,*.bib,*.css,*/_build'
+quiet-level = 0
+# the word list should always have words in lower case
+ignore-words-list = "collapsable"

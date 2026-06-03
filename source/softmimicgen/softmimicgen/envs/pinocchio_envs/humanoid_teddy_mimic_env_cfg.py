@@ -1,0 +1,83 @@
+# Copyright (c) 2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+
+from isaaclab.envs.mimic_env_cfg import MimicEnvCfg
+from isaaclab.utils import configclass
+
+from softmimicgen.envs.soft_mimic_env_cfg import SoftSubTaskConfig as SubTaskConfig
+from softmimicgen_tasks.humanoid.humanoid_teddy_env_cfg import GR1T2TeddyEnvCfg
+
+
+@configclass
+class GR1T2TeddyMimicEnvCfg(GR1T2TeddyEnvCfg, MimicEnvCfg):
+
+    def __post_init__(self):
+        # Calling post init of parents
+        super().__post_init__()
+
+        # Override the existing values
+        self.datagen_config.name = "gr1t2_teddy_task"
+        self.datagen_config.generation_guarantee = True
+        self.datagen_config.generation_keep_failed = False
+        self.datagen_config.generation_num_trials = 1000
+        self.datagen_config.generation_select_src_per_subtask = False
+        self.datagen_config.generation_select_src_per_arm = False
+        self.datagen_config.generation_relative = False
+        self.datagen_config.generation_joint_pos = False
+        self.datagen_config.generation_transform_first_robot_pose = False
+        self.datagen_config.generation_interpolate_from_last_target_pose = True
+        self.datagen_config.max_num_failures = 25
+        self.datagen_config.num_demo_to_render = 10
+        self.datagen_config.num_fail_demo_to_render = 25
+        self.datagen_config.seed = 1
+
+        subtask_configs = []
+        subtask_configs.append(
+            SubTaskConfig(
+                object_ref="container",
+                subtask_term_signal=None,
+                first_subtask_start_offset_range=(0, 0),
+                subtask_term_offset_range=(0, 0),
+                selection_strategy="random",
+                action_noise=0.003,
+                num_interpolation_steps=0,
+                num_fixed_steps=0,
+                apply_noise_during_interpolation=False,
+            )
+        )
+        self.subtask_configs["right"] = subtask_configs
+
+        subtask_configs = []
+        subtask_configs.append(
+            SubTaskConfig(
+                object_ref="object",
+                object_soft=True,
+                subtask_term_signal="grasp",
+                subtask_term_offset_range=(0, 0),
+                selection_strategy="registration_cost",
+                selection_strategy_kwargs={"nn_k": 3},
+                action_noise=0.003,
+                num_interpolation_steps=0,
+                num_fixed_steps=0,
+                apply_noise_during_interpolation=False,
+            )
+        )
+        subtask_configs.append(
+            SubTaskConfig(
+                object_ref="container",
+                subtask_term_signal=None,
+                subtask_term_offset_range=(0, 0),
+                selection_strategy="random",
+                action_noise=0.003,
+                num_interpolation_steps=3,
+                num_fixed_steps=0,
+                apply_noise_during_interpolation=False,
+            )
+        )
+        self.subtask_configs["left"] = subtask_configs

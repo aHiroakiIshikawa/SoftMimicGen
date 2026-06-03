@@ -1,0 +1,22 @@
+[package]
+
+# Note: Semantic Versioning is used: https://semver.org/
+version = "0.1.0"
+
+# Description
+title = "SoftMimicGen Assets"
+description="Robot and asset configurations for SoftMimicGen."
+repository = "https://softmimicgen.github.io/"
+category = "robotics"
+keywords = ["robotics", "deformable", "manipulation", "assets", "mimicgen"]
+author = "Masoud Moghani"
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+
+[core]
+reloadable = false
+
+[[python.module]]
+name = "softmimicgen_assets"
