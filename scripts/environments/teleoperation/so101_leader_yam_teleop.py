@@ -149,10 +149,11 @@ parser.add_argument(
 parser.add_argument(
     "--joint_scale",
     type=float,
-    default=math.pi / 2,
+    default=0.5,
     help=(
         "Relative mode only: radians of YAM joint motion per 100 units of SO-101 travel."
-        " Lower it for finer, safer control (e.g. 0.5)."
+        " Default 0.5 was verified on hardware. Raise it for a larger workspace, lower it for"
+        " finer, safer control."
     ),
 )
 parser.add_argument(
