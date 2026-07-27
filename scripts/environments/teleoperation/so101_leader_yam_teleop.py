@@ -128,6 +128,28 @@ parser.add_argument(
     "--fixed_joint_value", type=float, default=0.0, help="Constant target (rad) for the fixed YAM joint."
 )
 parser.add_argument(
+    "--mapping",
+    type=str,
+    default="relative",
+    choices=["relative", "absolute"],
+    help=(
+        "How SO-101 joint values are mapped onto YAM. 'relative' (default) records the leader's pose"
+        " at startup as the neutral reference and applies only the change from it on top of YAM's"
+        " default pose, so the arm starts exactly at its rest pose and never jumps. 'absolute' maps"
+        " the leader's full -100..100 range onto the YAM joint range -- note the SO-101's physical"
+        " resting pose sits near the ends of that range, so absolute mode starts in an extreme pose."
+    ),
+)
+parser.add_argument(
+    "--joint_scale",
+    type=float,
+    default=math.pi / 2,
+    help=(
+        "Relative mode only: radians of YAM joint motion per 100 units of SO-101 travel."
+        " Lower it for finer, safer control (e.g. 0.5)."
+    ),
+)
+parser.add_argument(
     "--joint_signs",
     type=str,
     default="1,1,1,1,1",
@@ -437,6 +459,21 @@ def main() -> None:
 
     print("[INFO] Teleoperation running. Press Ctrl+C to stop.")
 
+    # In relative mode the leader's current pose becomes the neutral reference: YAM starts at its
+    # own default pose and only follows the CHANGE in the leader's joints from here on. This avoids
+    # the jump to an extreme pose that absolute mapping causes, because the SO-101's physical
+    # resting pose sits near the ends of its normalized -100..100 range.
+    origin_raw = None
+    rad_per_unit = args_cli.joint_scale / 100.0
+    if args_cli.mapping == "relative":
+        first_action, _ = read_leader_action()
+        origin_raw = [first_action[k] for k in SO101_LEADER_ARM_KEYS]
+        print(
+            "[INFO] Relative mapping: holding this leader pose as neutral -> "
+            + " ".join(f"{k.split('.')[0]}={v:.2f}" for k, v in zip(SO101_LEADER_ARM_KEYS, origin_raw))
+        )
+        print(f"[INFO] Scale: {args_cli.joint_scale:.3f} rad per 100 leader units. Move the leader slowly at first.")
+
     stats = LatencyStats(args_cli.print_every, read_label)
     debug_count = 0
     if args_cli.debug_actions:
@@ -448,14 +485,22 @@ def main() -> None:
             while simulation_app.is_running():
                 leader_action, read_dt = read_leader_action()
 
-                for key, joint_idx, sign in zip(SO101_LEADER_ARM_KEYS, driven_joint_indices, joint_signs):
+                for i, (key, joint_idx, sign) in enumerate(
+                    zip(SO101_LEADER_ARM_KEYS, driven_joint_indices, joint_signs)
+                ):
                     raw = leader_action[key]
-                    norm = min(max((raw + 100.0) / 200.0, 0.0), 1.0)
-                    if sign < 0:
-                        # mirror about the middle of the range so the neutral pose stays put
-                        norm = 1.0 - norm
                     lo, hi = joint_limits[joint_idx]
-                    actions[0, joint_idx] = lo + norm * (hi - lo)
+                    if origin_raw is not None:
+                        # relative: YAM default pose + signed leader travel since startup
+                        target = default_arm_pos[joint_idx] + sign * (raw - origin_raw[i]) * rad_per_unit
+                        target = min(max(float(target), float(lo)), float(hi))
+                    else:
+                        norm = min(max((raw + 100.0) / 200.0, 0.0), 1.0)
+                        if sign < 0:
+                            # mirror about the middle of the range so the neutral pose stays put
+                            norm = 1.0 - norm
+                        target = lo + norm * (hi - lo)
+                    actions[0, joint_idx] = target
                 actions[0, args_cli.fixed_joint_index] = args_cli.fixed_joint_value
 
                 gripper_raw = leader_action[SO101_LEADER_GRIPPER_KEY]
