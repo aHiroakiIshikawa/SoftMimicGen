@@ -27,8 +27,13 @@ Two ``--leader_source`` modes are supported:
 * ``network``: the SO-101 leader is attached to a DIFFERENT machine (e.g. this script
   runs on an EC2 GPU instance, while the leader is plugged into your local Mac). Run
   ``so101_leader_client.py`` on the machine with the leader attached; it streams leader
-  joint positions over UDP to this script, which listens on ``--listen_host``/``--listen_port``
+  joint positions over TCP to this script, which listens on ``--listen_host``/``--listen_port``
   and does NOT need ``lerobot`` installed at all.
+
+  TCP (rather than UDP) is used deliberately so the stream can be carried over an ordinary
+  SSH local port-forward (``ssh -L``), which only forwards TCP. ``TCP_NODELAY`` is set on
+  both ends to disable Nagle's algorithm - without it, small packets can be buffered for up
+  to ~40 ms, which would dominate the very latency this script is meant to measure.
 
 Requirements (``local`` mode only):
 
@@ -56,7 +61,6 @@ Usage (network mode, e.g. this script on EC2, leader on your local Mac):
     #   ssh -L 9999:localhost:9999 <user>@<ec2-host>   # in a separate terminal, keep open
     python scripts/environments/teleoperation/so101_leader_client.py \
         --host localhost --port 9999 --teleop_port /dev/tty.usbmodemXXXX --teleop_id leader_arm_1
-
 Note:
     ``--enable_cameras`` is required because the Fold-Towel task's scene defines camera
     sensors (top / left_wrist / right_wrist), which are included in the per-step timing.
@@ -100,14 +104,18 @@ parser.add_argument(
 parser.add_argument(
     "--listen_host",
     type=str,
-    default="0.0.0.0",
-    help="[network mode] Host/interface to listen for leader packets on.",
+    default="127.0.0.1",
+    help=(
+        "[network mode] Host/interface to listen for leader packets on. Default 127.0.0.1 is"
+        " correct when the client reaches this machine through an SSH port-forward. Use 0.0.0.0"
+        " only if the client connects directly to this machine's public address."
+    ),
 )
 parser.add_argument(
     "--listen_port",
     type=int,
     default=9999,
-    help="[network mode] UDP port to listen for leader packets on.",
+    help="[network mode] TCP port to listen for leader packets on.",
 )
 parser.add_argument(
     "--fixed_joint_index",
@@ -163,17 +171,27 @@ SO101_LEADER_GRIPPER_KEY = "gripper.pos"
 
 
 class NetworkLeaderReceiver:
-    """Background UDP receiver that keeps the most recently received SO-101 leader packet.
+    """Background TCP receiver that keeps the most recently received SO-101 leader packet.
 
-    Runs a daemon thread that continuously receives JSON-encoded leader action dicts (as
-    sent by ``so101_leader_client.py``) and stores only the most recent one. The main
-    simulation loop then reads the latest value every step without blocking on network I/O,
-    so network jitter shows up as "packet age" rather than stalling the sim loop.
+    Accepts a connection from ``so101_leader_client.py`` and runs a daemon thread that
+    continuously reads newline-delimited JSON leader action dicts, storing only the most
+    recent one. The main simulation loop then reads the latest value every step without
+    blocking on network I/O, so network jitter shows up as "packet age" rather than
+    stalling the sim loop.
+
+    TCP is used (rather than UDP) so the stream can be tunnelled through an ordinary SSH
+    local port-forward, which only carries TCP. ``TCP_NODELAY`` disables Nagle's algorithm
+    so that each small joint-position packet is sent immediately instead of being buffered.
+
+    If the client disconnects, the receiver goes back to waiting for a new connection, so
+    the sender can be restarted without restarting the simulation.
     """
 
     def __init__(self, host: str, port: int):
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((host, port))
+        self._sock.listen(1)
         self._lock = threading.Lock()
         self._latest: dict | None = None
         self._latest_recv_time: float | None = None
@@ -190,16 +208,38 @@ class NetworkLeaderReceiver:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                data, _ = self._sock.recvfrom(4096)
+                conn, addr = self._sock.accept()
             except OSError:
                 break
+            print(f"[INFO] Leader client connected from {addr[0]}:{addr[1]}")
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            with conn:
+                self._read_connection(conn)
+            print("[INFO] Leader client disconnected. Waiting for a new connection...")
+
+    def _read_connection(self, conn: socket.socket) -> None:
+        buffer = b""
+        while not self._stop_event.is_set():
             try:
-                action = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                continue
-            with self._lock:
-                self._latest = action
-                self._latest_recv_time = time.perf_counter()
+                chunk = conn.recv(4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buffer += chunk
+            # the sender delimits each JSON payload with a newline; a single recv() may
+            # contain several payloads or only part of one, so parse line by line.
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    action = json.loads(line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                with self._lock:
+                    self._latest = action
+                    self._latest_recv_time = time.perf_counter()
 
     def get_latest(self) -> tuple[dict | None, float | None]:
         """Returns (latest_action, seconds_since_received), or (None, None) if nothing received yet."""
@@ -293,7 +333,7 @@ def main() -> None:
     else:
         receiver = NetworkLeaderReceiver(args_cli.listen_host, args_cli.listen_port)
         receiver.start()
-        print(f"[INFO] Listening for SO-101 leader packets on udp://{args_cli.listen_host}:{args_cli.listen_port}")
+        print(f"[INFO] Listening for SO-101 leader packets on tcp://{args_cli.listen_host}:{args_cli.listen_port}")
         print(
             "[INFO] Waiting for the first packet (run so101_leader_client.py on the machine with the"
             " SO-101 leader attached)..."
