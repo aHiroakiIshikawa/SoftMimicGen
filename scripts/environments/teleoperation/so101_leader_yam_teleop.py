@@ -156,6 +156,16 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--clamp_to_limits",
+    action="store_true",
+    default=False,
+    help=(
+        "Relative mode only: clamp commanded joint targets to the joint position range. Off by"
+        " default so the full leader travel is usable. Relative targets stay finite regardless,"
+        " since they are default_joint_pos + bounded leader travel."
+    ),
+)
+parser.add_argument(
     "--joint_signs",
     type=str,
     default="-1,1,-1,-1,-1",
@@ -508,8 +518,9 @@ def main() -> None:
                     lo, hi = joint_limits[joint_idx]
                     if origin_raw is not None:
                         # relative: YAM default pose + signed leader travel since startup
-                        target = default_arm_pos[joint_idx] + sign * (raw - origin_raw[i]) * rad_per_unit
-                        target = min(max(float(target), float(lo)), float(hi))
+                        target = float(default_arm_pos[joint_idx] + sign * (raw - origin_raw[i]) * rad_per_unit)
+                        if args_cli.clamp_to_limits:
+                            target = min(max(target, float(lo)), float(hi))
                     else:
                         norm = min(max((raw + 100.0) / 200.0, 0.0), 1.0)
                         if sign < 0:
