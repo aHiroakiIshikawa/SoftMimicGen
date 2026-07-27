@@ -10,9 +10,9 @@
 Teleoperate one arm of the YAM Fold-Towel task with a physical SO-101 leader arm.
 
 This script is meant for testing/benchmarking teleoperation latency: it reads joint
-positions from a real SO-101 leader arm (via the ``lerobot`` package) every simulation
-step and drives ``robot_1`` of the ``Isaac-Fold-Towel-Yam-Joint-v0`` task in real time.
-``robot_2`` (the second YAM arm) is held at its initial resting pose the whole session.
+positions from a real SO-101 leader arm every simulation step and drives ``robot_1``
+of the ``Isaac-Fold-Towel-Yam-Joint-v0`` task in real time. ``robot_2`` (the second
+YAM arm) is held at its initial resting pose the whole session.
 
 The SO-101 leader has 5 arm joints + 1 gripper, while YAM has 6 arm joints + 1 gripper.
 To bridge this DoF mismatch, one YAM joint is held constant (default: joint6, the last
@@ -20,20 +20,42 @@ wrist joint, fixed at 0.0 rad) and the SO-101's 5 remaining joints drive YAM's o
 joints, in order (shoulder_pan -> joint1, shoulder_lift -> joint2, elbow_flex -> joint3,
 wrist_flex -> joint4, wrist_roll -> joint5).
 
-Requirements:
-    Requires the ``lerobot`` package for SO-101 leader hardware access, in addition to
-    the regular SoftMimicGen / Isaac Lab environment:
+Two ``--leader_source`` modes are supported:
+
+* ``local`` (default): connect directly to the SO-101 leader hardware via ``lerobot`` on
+  the SAME machine that runs this script. Requires the ``lerobot`` package.
+* ``network``: the SO-101 leader is attached to a DIFFERENT machine (e.g. this script
+  runs on an EC2 GPU instance, while the leader is plugged into your local Mac). Run
+  ``so101_leader_client.py`` on the machine with the leader attached; it streams leader
+  joint positions over UDP to this script, which listens on ``--listen_host``/``--listen_port``
+  and does NOT need ``lerobot`` installed at all.
+
+Requirements (``local`` mode only):
 
     .. code-block:: bash
 
         pip install lerobot      # or: uv pip install lerobot
 
-Usage:
+Usage (local mode, leader hardware attached to this machine):
 
 .. code-block:: bash
 
     ./isaaclab.sh -p scripts/environments/teleoperation/so101_leader_yam_teleop.py \
-        --teleop_port /dev/ttyACM0 --teleop_id leader_arm_1 --enable_cameras
+        --leader_source local --teleop_port /dev/ttyACM0 --teleop_id leader_arm_1 --enable_cameras
+
+Usage (network mode, e.g. this script on EC2, leader on your local Mac):
+
+.. code-block:: bash
+
+    # on EC2 (this script) - open an SSH tunnel from your Mac first, or open the
+    # security group port, then:
+    ./isaaclab.sh -p scripts/environments/teleoperation/so101_leader_yam_teleop.py \
+        --leader_source network --listen_host 0.0.0.0 --listen_port 9999 --enable_cameras
+
+    # on your Mac (so101_leader_client.py, no Isaac Sim required):
+    #   ssh -L 9999:localhost:9999 <user>@<ec2-host>   # in a separate terminal, keep open
+    python scripts/environments/teleoperation/so101_leader_client.py \
+        --host localhost --port 9999 --teleop_port /dev/tty.usbmodemXXXX --teleop_id leader_arm_1
 
 Note:
     ``--enable_cameras`` is required because the Fold-Towel task's scene defines camera
@@ -51,16 +73,41 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Drive one arm of the YAM Fold-Towel task with a SO-101 leader arm.")
 parser.add_argument("--task", type=str, default="Isaac-Fold-Towel-Yam-Joint-v0", help="Name of the task.")
 parser.add_argument(
+    "--leader_source",
+    type=str,
+    default="local",
+    choices=["local", "network"],
+    help=(
+        "Where SO-101 leader joint positions come from. 'local': connect directly to the leader"
+        " hardware via lerobot on this machine (requires --teleop_port/--teleop_id and 'lerobot'"
+        " installed). 'network': receive leader packets over UDP from so101_leader_client.py"
+        " running on a different machine (e.g. this script on an EC2 instance, the client on your"
+        " Mac with the leader attached) - no 'lerobot' needed here."
+    ),
+)
+parser.add_argument(
     "--teleop_port",
     type=str,
     default=os.getenv("TELEOP_PORT", "/dev/ttyACM0"),
-    help="Serial port of the SO-101 leader arm.",
+    help="[local mode] Serial port of the SO-101 leader arm.",
 )
 parser.add_argument(
     "--teleop_id",
     type=str,
     default=os.getenv("TELEOP_ID", "leader_arm_1"),
-    help="Calibration id of the SO-101 leader arm.",
+    help="[local mode] Calibration id of the SO-101 leader arm.",
+)
+parser.add_argument(
+    "--listen_host",
+    type=str,
+    default="0.0.0.0",
+    help="[network mode] Host/interface to listen for leader packets on.",
+)
+parser.add_argument(
+    "--listen_port",
+    type=int,
+    default=9999,
+    help="[network mode] UDP port to listen for leader packets on.",
 )
 parser.add_argument(
     "--fixed_joint_index",
@@ -83,6 +130,9 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import json
+import socket
+import threading
 import time
 
 import gymnasium as gym
@@ -91,14 +141,15 @@ import torch
 import softmimicgen_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
-try:
-    from lerobot.robots import make_robot_from_config
-    from lerobot.teleoperators.so101_leader import SO101LeaderConfig
-except ImportError as e:
-    raise ImportError(
-        "This script requires the 'lerobot' package for SO-101 leader hardware access. Install it with"
-        " `pip install lerobot` (or `uv pip install lerobot`)."
-    ) from e
+if args_cli.leader_source == "local":
+    try:
+        from lerobot.robots import make_robot_from_config
+        from lerobot.teleoperators.so101_leader import SO101LeaderConfig
+    except ImportError as e:
+        raise ImportError(
+            "This script requires the 'lerobot' package for SO-101 leader hardware access. Install it with"
+            " `pip install lerobot` (or `uv pip install lerobot`), or use --leader_source network instead."
+        ) from e
 
 # SO-101 leader keys, in the order they drive YAM's non-fixed arm joints.
 SO101_LEADER_ARM_KEYS = [
@@ -111,11 +162,59 @@ SO101_LEADER_ARM_KEYS = [
 SO101_LEADER_GRIPPER_KEY = "gripper.pos"
 
 
+class NetworkLeaderReceiver:
+    """Background UDP receiver that keeps the most recently received SO-101 leader packet.
+
+    Runs a daemon thread that continuously receives JSON-encoded leader action dicts (as
+    sent by ``so101_leader_client.py``) and stores only the most recent one. The main
+    simulation loop then reads the latest value every step without blocking on network I/O,
+    so network jitter shows up as "packet age" rather than stalling the sim loop.
+    """
+
+    def __init__(self, host: str, port: int):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind((host, port))
+        self._lock = threading.Lock()
+        self._latest: dict | None = None
+        self._latest_recv_time: float | None = None
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._sock.close()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                data, _ = self._sock.recvfrom(4096)
+            except OSError:
+                break
+            try:
+                action = json.loads(data.decode("utf-8"))
+            except json.JSONDecodeError:
+                continue
+            with self._lock:
+                self._latest = action
+                self._latest_recv_time = time.perf_counter()
+
+    def get_latest(self) -> tuple[dict | None, float | None]:
+        """Returns (latest_action, seconds_since_received), or (None, None) if nothing received yet."""
+        with self._lock:
+            if self._latest is None:
+                return None, None
+            return self._latest, time.perf_counter() - self._latest_recv_time
+
+
 class LatencyStats:
     """Tracks and periodically prints loop timing statistics."""
 
-    def __init__(self, print_every: int):
+    def __init__(self, print_every: int, read_label: str = "leader read"):
         self.print_every = print_every
+        self.read_label = read_label
         self.count = 0
         self.last_print_time = time.perf_counter()
         self.read_time_total = 0.0
@@ -133,7 +232,7 @@ class LatencyStats:
             avg_step_ms = 1000 * self.step_time_total / self.print_every
             avg_loop_ms = 1000 * elapsed / self.print_every
             print(
-                f"[latency] loop={hz:6.1f} Hz | leader.get_action={avg_read_ms:6.2f} ms |"
+                f"[latency] loop={hz:6.1f} Hz | {self.read_label}={avg_read_ms:6.2f} ms |"
                 f" env.step={avg_step_ms:6.2f} ms | total/step={avg_loop_ms:6.2f} ms"
             )
             self.last_print_time = now
@@ -175,21 +274,51 @@ def main() -> None:
     driven_joint_indices = [i for i in range(6) if i != args_cli.fixed_joint_index]
     assert len(driven_joint_indices) == len(SO101_LEADER_ARM_KEYS)
 
-    # connect to the physical SO-101 leader arm
-    leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id)
-    leader = make_robot_from_config(leader_cfg)
-    leader.connect()
-    print(f"[INFO] Connected to SO-101 leader arm at {args_cli.teleop_port} (id={args_cli.teleop_id})")
+    # set up the leader source: either connect directly to local SO-101 hardware, or listen
+    # for packets streamed over the network by so101_leader_client.py
+    leader = None
+    receiver = None
+    if args_cli.leader_source == "local":
+        leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id)
+        leader = make_robot_from_config(leader_cfg)
+        leader.connect()
+        print(f"[INFO] Connected to SO-101 leader arm at {args_cli.teleop_port} (id={args_cli.teleop_id})")
+
+        def read_leader_action() -> tuple[dict, float]:
+            t0 = time.perf_counter()
+            action = leader.get_action()
+            return action, time.perf_counter() - t0
+
+        read_label = "leader.get_action"
+    else:
+        receiver = NetworkLeaderReceiver(args_cli.listen_host, args_cli.listen_port)
+        receiver.start()
+        print(f"[INFO] Listening for SO-101 leader packets on udp://{args_cli.listen_host}:{args_cli.listen_port}")
+        print(
+            "[INFO] Waiting for the first packet (run so101_leader_client.py on the machine with the"
+            " SO-101 leader attached)..."
+        )
+        while True:
+            action, age = receiver.get_latest()
+            if action is not None:
+                break
+            time.sleep(0.05)
+        print("[INFO] First packet received.")
+
+        def read_leader_action() -> tuple[dict, float]:
+            action, age = receiver.get_latest()
+            return action, age if age is not None else 0.0
+
+        read_label = "packet age"
+
     print("[INFO] Teleoperation running. Press Ctrl+C to stop.")
 
-    stats = LatencyStats(args_cli.print_every)
+    stats = LatencyStats(args_cli.print_every, read_label)
 
     try:
         with torch.inference_mode():
             while simulation_app.is_running():
-                t0 = time.perf_counter()
-                leader_action = leader.get_action()
-                t1 = time.perf_counter()
+                leader_action, read_dt = read_leader_action()
 
                 for key, joint_idx in zip(SO101_LEADER_ARM_KEYS, driven_joint_indices):
                     raw = leader_action[key]
@@ -205,11 +334,14 @@ def main() -> None:
                 env.step(actions)
                 t3 = time.perf_counter()
 
-                stats.update(read_dt=t1 - t0, step_dt=t3 - t2)
+                stats.update(read_dt=read_dt, step_dt=t3 - t2)
     except KeyboardInterrupt:
         print("\n[INFO] Teleoperation interrupted by user.")
     finally:
-        leader.disconnect()
+        if leader is not None:
+            leader.disconnect()
+        if receiver is not None:
+            receiver.stop()
         env.close()
         print("[INFO] Disconnected leader arm and closed environment.")
 
