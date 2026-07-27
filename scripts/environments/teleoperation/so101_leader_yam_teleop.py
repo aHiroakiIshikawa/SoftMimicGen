@@ -152,7 +152,13 @@ from isaaclab_tasks.utils import parse_env_cfg
 if args_cli.leader_source == "local":
     try:
         from lerobot.robots import make_robot_from_config
-        from lerobot.teleoperators.so101_leader import SO101LeaderConfig
+
+        try:
+            # lerobot >= 0.5.2 merged the SO-100/101 leaders into a single ``so_leader`` module.
+            from lerobot.teleoperators.so_leader import SO101LeaderConfig
+        except ImportError:
+            # older lerobot releases kept a dedicated ``so101_leader`` module.
+            from lerobot.teleoperators.so101_leader import SO101LeaderConfig
     except ImportError as e:
         raise ImportError(
             "This script requires the 'lerobot' package for SO-101 leader hardware access. Install it with"
@@ -319,7 +325,9 @@ def main() -> None:
     leader = None
     receiver = None
     if args_cli.leader_source == "local":
-        leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id)
+        # use_degrees=False -> arm joints in lerobot's normalized -100..100 range (gripper 0..100),
+        # which is what the joint-limit mapping below expects. Do NOT use the default use_degrees=True.
+        leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id, use_degrees=False)
         leader = make_robot_from_config(leader_cfg)
         leader.connect()
         print(f"[INFO] Connected to SO-101 leader arm at {args_cli.teleop_port} (id={args_cli.teleop_id})")

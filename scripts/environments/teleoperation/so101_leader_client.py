@@ -79,7 +79,13 @@ args_cli = parser.parse_args()
 
 try:
     from lerobot.robots import make_robot_from_config
-    from lerobot.teleoperators.so101_leader import SO101LeaderConfig
+
+    try:
+        # lerobot >= 0.5.2 merged the SO-100/101 leaders into a single ``so_leader`` module.
+        from lerobot.teleoperators.so_leader import SO101LeaderConfig
+    except ImportError:
+        # older lerobot releases kept a dedicated ``so101_leader`` module.
+        from lerobot.teleoperators.so101_leader import SO101LeaderConfig
 except ImportError as e:
     raise ImportError(
         "This script requires the 'lerobot' package for SO-101 leader hardware access. Install it with"
@@ -88,7 +94,10 @@ except ImportError as e:
 
 
 def main() -> None:
-    leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id)
+    # use_degrees=False -> arm joints are reported in lerobot's normalized -100..100 range
+    # (the gripper stays 0..100). The receiving side maps that range onto the YAM joint limits,
+    # so it must NOT be left at the SO-101 default of use_degrees=True.
+    leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id, use_degrees=False)
     leader = make_robot_from_config(leader_cfg)
     leader.connect()
     print(f"[INFO] Connected to SO-101 leader arm at {args_cli.teleop_port} (id={args_cli.teleop_id})")
