@@ -187,6 +187,26 @@ parser.add_argument(
     default=False,
     help="Mirror the gripper command (closing the SO-101 gripper opens the YAM gripper and vice versa).",
 )
+parser.add_argument(
+    "--render_interval",
+    type=int,
+    default=None,
+    help=(
+        "Override sim.render_interval. The task ships render_interval=1 with decimation=4, so it"
+        " renders 4x per env.step. Setting this to the decimation (4) renders once per env.step and"
+        " is usually a large speedup for this camera-heavy scene."
+    ),
+)
+parser.add_argument(
+    "--disable_cameras",
+    action="store_true",
+    default=False,
+    help=(
+        "Remove the scene's 3 cameras (and their image observation terms) before creating the env."
+        " This script never reads camera output, so this measures the control-loop latency floor"
+        " without the rendering cost. Note --enable_cameras is then unnecessary."
+    ),
+)
 parser.add_argument("--print_every", type=int, default=60, help="Print loop latency stats every N steps.")
 parser.add_argument(
     "--fallback_joint_range",
@@ -378,6 +398,23 @@ def main() -> None:
     # parse configuration (single env; terminations disabled so the session runs until Ctrl+C)
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=1)
     env_cfg.terminations = None
+
+    if args_cli.render_interval is not None:
+        print(f"[INFO] sim.render_interval: {env_cfg.sim.render_interval} -> {args_cli.render_interval}")
+        env_cfg.sim.render_interval = args_cli.render_interval
+
+    if args_cli.disable_cameras:
+        # the cameras and their image observations are pure overhead here: this script only needs
+        # joint targets, and rendering dominates env.step in this scene.
+        removed = []
+        for cam in ("top_camera", "left_wrist_camera", "right_wrist_camera"):
+            if getattr(env_cfg.scene, cam, None) is not None:
+                setattr(env_cfg.scene, cam, None)
+                removed.append(cam)
+        for obs in ("top", "left", "right"):
+            if getattr(env_cfg.observations.policy, obs, None) is not None:
+                setattr(env_cfg.observations.policy, obs, None)
+        print(f"[INFO] Cameras disabled: {removed} (image observation terms removed too)")
 
     # create environment
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
