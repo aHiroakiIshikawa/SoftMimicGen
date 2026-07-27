@@ -127,6 +127,23 @@ parser.add_argument(
 parser.add_argument(
     "--fixed_joint_value", type=float, default=0.0, help="Constant target (rad) for the fixed YAM joint."
 )
+parser.add_argument(
+    "--joint_signs",
+    type=str,
+    default="1,1,1,1,1",
+    help=(
+        "Comma-separated direction sign (+1 or -1) for each of the SO-101's 5 arm joints, in the"
+        " order shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll. Use -1 to mirror a"
+        " joint whose rotation direction is opposite to the YAM joint it drives."
+        " Example: --joint_signs=-1,-1,1,1,1"
+    ),
+)
+parser.add_argument(
+    "--invert_gripper",
+    action="store_true",
+    default=False,
+    help="Mirror the gripper command (closing the SO-101 gripper opens the YAM gripper and vice versa).",
+)
 parser.add_argument("--print_every", type=int, default=60, help="Print loop latency stats every N steps.")
 parser.add_argument(
     "--fallback_joint_range",
@@ -368,6 +385,17 @@ def main() -> None:
     driven_joint_indices = [i for i in range(6) if i != args_cli.fixed_joint_index]
     assert len(driven_joint_indices) == len(SO101_LEADER_ARM_KEYS)
 
+    # per-joint direction signs: -1 mirrors a joint whose rotation direction is opposite to YAM's
+    joint_signs = [float(s) for s in args_cli.joint_signs.split(",")]
+    assert len(joint_signs) == len(SO101_LEADER_ARM_KEYS), (
+        f"--joint_signs needs {len(SO101_LEADER_ARM_KEYS)} comma-separated values"
+        f" (one per SO-101 arm joint), got {len(joint_signs)}: {args_cli.joint_signs!r}"
+    )
+    assert all(s in (1.0, -1.0) for s in joint_signs), f"--joint_signs values must be 1 or -1, got {joint_signs}"
+    if any(s < 0 for s in joint_signs):
+        mirrored = [k for k, s in zip(SO101_LEADER_ARM_KEYS, joint_signs) if s < 0]
+        print(f"[INFO] Mirroring direction for: {mirrored}")
+
     # set up the leader source: either connect directly to local SO-101 hardware, or listen
     # for packets streamed over the network by so101_leader_client.py
     leader = None
@@ -420,15 +448,21 @@ def main() -> None:
             while simulation_app.is_running():
                 leader_action, read_dt = read_leader_action()
 
-                for key, joint_idx in zip(SO101_LEADER_ARM_KEYS, driven_joint_indices):
+                for key, joint_idx, sign in zip(SO101_LEADER_ARM_KEYS, driven_joint_indices, joint_signs):
                     raw = leader_action[key]
                     norm = min(max((raw + 100.0) / 200.0, 0.0), 1.0)
+                    if sign < 0:
+                        # mirror about the middle of the range so the neutral pose stays put
+                        norm = 1.0 - norm
                     lo, hi = joint_limits[joint_idx]
                     actions[0, joint_idx] = lo + norm * (hi - lo)
                 actions[0, args_cli.fixed_joint_index] = args_cli.fixed_joint_value
 
                 gripper_raw = leader_action[SO101_LEADER_GRIPPER_KEY]
-                actions[0, 6] = min(max(gripper_raw / 100.0, 0.0), 1.0)
+                gripper_cmd = min(max(gripper_raw / 100.0, 0.0), 1.0)
+                if args_cli.invert_gripper:
+                    gripper_cmd = 1.0 - gripper_cmd
+                actions[0, 6] = gripper_cmd
 
                 t2 = time.perf_counter()
                 env.step(actions)
