@@ -15,10 +15,12 @@ of the ``Isaac-Fold-Towel-Yam-Joint-v0`` task in real time. ``robot_2`` (the sec
 YAM arm) is held at its initial resting pose the whole session.
 
 The SO-101 leader has 5 arm joints + 1 gripper, while YAM has 6 arm joints + 1 gripper.
-To bridge this DoF mismatch, one YAM joint is held constant (default: joint6, the last
-wrist joint, fixed at 0.0 rad) and the SO-101's 5 remaining joints drive YAM's other 5
-joints, in order (shoulder_pan -> joint1, shoulder_lift -> joint2, elbow_flex -> joint3,
-wrist_flex -> joint4, wrist_roll -> joint5).
+To bridge this DoF mismatch, one YAM joint is held constant (default: joint5, fixed at
+0.0 rad) and the SO-101's 5 remaining joints drive YAM's other 5 joints, in order
+(shoulder_pan -> joint1, shoulder_lift -> joint2, elbow_flex -> joint3,
+wrist_flex -> joint4, wrist_roll -> joint6). Skipping joint5 keeps the leader's wrist
+roll on YAM's final wrist joint. Use --fixed_joint_index to hold a different joint
+instead (e.g. 5 holds joint6 and maps wrist_roll -> joint5).
 
 Two ``--leader_source`` modes are supported:
 
@@ -121,8 +123,12 @@ parser.add_argument(
 parser.add_argument(
     "--fixed_joint_index",
     type=int,
-    default=5,
-    help="0-based index (within joint1..joint6) of the YAM joint held constant. Default 5 = joint6.",
+    default=4,
+    help=(
+        "0-based index (within joint1..joint6) of the YAM joint held constant. Default 4 = joint5,"
+        " which routes the leader's wrist_roll onto YAM's last joint (joint6). Use 5 to hold joint6"
+        " instead, mapping wrist_roll -> joint5."
+    ),
 )
 parser.add_argument(
     "--fixed_joint_value", type=float, default=0.0, help="Constant target (rad) for the fixed YAM joint."
@@ -152,12 +158,13 @@ parser.add_argument(
 parser.add_argument(
     "--joint_signs",
     type=str,
-    default="1,1,1,1,1",
+    default="-1,1,-1,-1,-1",
     help=(
         "Comma-separated direction sign (+1 or -1) for each of the SO-101's 5 arm joints, in the"
         " order shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll. Use -1 to mirror a"
-        " joint whose rotation direction is opposite to the YAM joint it drives."
-        " Example: --joint_signs=-1,-1,1,1,1"
+        " joint whose rotation direction is opposite to the YAM joint it drives. The default was"
+        " verified on hardware; re-check wrist_roll if you change --fixed_joint_index, since that"
+        " changes which YAM joint it drives. Example: --joint_signs=-1,1,-1,-1,1"
     ),
 )
 parser.add_argument(
@@ -417,6 +424,15 @@ def main() -> None:
     if any(s < 0 for s in joint_signs):
         mirrored = [k for k, s in zip(SO101_LEADER_ARM_KEYS, joint_signs) if s < 0]
         print(f"[INFO] Mirroring direction for: {mirrored}")
+
+    print("[INFO] Leader -> YAM joint mapping:")
+    for key, joint_idx, sign in zip(SO101_LEADER_ARM_KEYS, driven_joint_indices, joint_signs):
+        direction = "reversed" if sign < 0 else "normal"
+        print(f"[INFO]   {key.split('.')[0]:<14} -> {arm_joint_names[joint_idx]:<8} ({direction})")
+    print(
+        f"[INFO]   {'(held fixed)':<14} -> {arm_joint_names[args_cli.fixed_joint_index]:<8}"
+        f" at {args_cli.fixed_joint_value:.3f} rad"
+    )
 
     # set up the leader source: either connect directly to local SO-101 hardware, or listen
     # for packets streamed over the network by so101_leader_client.py
