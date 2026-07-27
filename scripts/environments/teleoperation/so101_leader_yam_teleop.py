@@ -69,6 +69,7 @@ Note:
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import math
 import os
 
 from isaaclab.app import AppLauncher
@@ -127,6 +128,16 @@ parser.add_argument(
     "--fixed_joint_value", type=float, default=0.0, help="Constant target (rad) for the fixed YAM joint."
 )
 parser.add_argument("--print_every", type=int, default=60, help="Print loop latency stats every N steps.")
+parser.add_argument(
+    "--fallback_joint_range",
+    type=float,
+    default=math.pi / 2,
+    help=(
+        "Half-range (radians) used for YAM joints whose reported position limits are not finite"
+        " (continuous/unlimited joints report +/-inf). Such joints are driven within"
+        " default_joint_pos +/- this value instead. Default: pi/2."
+    ),
+)
 parser.add_argument(
     "--debug_actions",
     action="store_true",
@@ -332,6 +343,26 @@ def main() -> None:
     assert len(arm_joint_ids) == 6, f"Expected 6 arm joints on robot_1, found {arm_joint_names}"
     print(f"[INFO] robot_1 arm joint order: {arm_joint_names}")
     joint_limits = robot_1.data.soft_joint_pos_limits[0, arm_joint_ids, :].cpu()
+
+    # YAM's arm joints can report non-finite position limits (continuous/unlimited joints show up
+    # as [-inf, +inf]). Feeding those into the linear range mapping below yields
+    # -inf + norm * (inf - -inf) = NaN, which silently poisons the articulation state and leaves the
+    # arm frozen. Substitute a bounded range around each joint's default pose instead.
+    default_arm_pos = robot_1.data.default_joint_pos[0, arm_joint_ids].cpu()
+    half_range = args_cli.fallback_joint_range
+    unbounded = []
+    for i, name in enumerate(arm_joint_names):
+        if not torch.isfinite(joint_limits[i]).all():
+            center = default_arm_pos[i]
+            joint_limits[i, 0] = center - half_range
+            joint_limits[i, 1] = center + half_range
+            unbounded.append(name)
+    if unbounded:
+        print(
+            f"[WARN] Joints {unbounded} report non-finite position limits; driving them within"
+            f" default_joint_pos +/- {half_range:.3f} rad instead (see --fallback_joint_range)."
+        )
+    assert torch.isfinite(joint_limits).all(), f"Non-finite joint limits remain: {joint_limits}"
 
     # non-fixed YAM joint indices, in the order the SO-101 leader's 5 arm joints drive them
     driven_joint_indices = [i for i in range(6) if i != args_cli.fixed_joint_index]
