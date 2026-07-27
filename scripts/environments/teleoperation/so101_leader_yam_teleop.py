@@ -148,11 +148,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--joint_scale",
-    type=float,
-    default=1.0,
+    type=str,
+    default="1.0",
     help=(
-        "Relative mode only: radians of YAM joint motion per 100 units of SO-101 travel."
-        " Raise it for a larger workspace, lower it (e.g. 0.5) for finer, safer control."
+        "Relative mode only: radians of YAM joint motion per 100 units of SO-101 travel. Either a"
+        " single value applied to every joint, or 5 comma-separated values in the order"
+        " shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll. Per-joint values let you"
+        " compensate for the leader's differing calibrated span per joint (its degrees-per-unit is"
+        " not the same on every joint). Example 1:1 gains for this leader:"
+        " --joint_scale=2.094,1.828,1.699,1.795,3.141"
     ),
 )
 parser.add_argument(
@@ -490,7 +494,14 @@ def main() -> None:
     # the jump to an extreme pose that absolute mapping causes, because the SO-101's physical
     # resting pose sits near the ends of its normalized -100..100 range.
     origin_raw = None
-    rad_per_unit = args_cli.joint_scale / 100.0
+    joint_scales = [float(s) for s in args_cli.joint_scale.split(",")]
+    if len(joint_scales) == 1:
+        joint_scales = joint_scales * len(SO101_LEADER_ARM_KEYS)
+    assert len(joint_scales) == len(SO101_LEADER_ARM_KEYS), (
+        f"--joint_scale needs either 1 value or {len(SO101_LEADER_ARM_KEYS)} comma-separated values"
+        f" (one per SO-101 arm joint), got {len(joint_scales)}: {args_cli.joint_scale!r}"
+    )
+    rad_per_unit = [s / 100.0 for s in joint_scales]
     if args_cli.mapping == "relative":
         first_action, _ = read_leader_action()
         origin_raw = [first_action[k] for k in SO101_LEADER_ARM_KEYS]
@@ -498,7 +509,11 @@ def main() -> None:
             "[INFO] Relative mapping: holding this leader pose as neutral -> "
             + " ".join(f"{k.split('.')[0]}={v:.2f}" for k, v in zip(SO101_LEADER_ARM_KEYS, origin_raw))
         )
-        print(f"[INFO] Scale: {args_cli.joint_scale:.3f} rad per 100 leader units. Move the leader slowly at first.")
+        print(
+            "[INFO] Scale (rad per 100 leader units): "
+            + " ".join(f"{k.split('.')[0]}={s:.3f}" for k, s in zip(SO101_LEADER_ARM_KEYS, joint_scales))
+        )
+        print("[INFO] Move the leader slowly at first.")
 
     stats = LatencyStats(args_cli.print_every, read_label)
     debug_count = 0
@@ -518,7 +533,7 @@ def main() -> None:
                     lo, hi = joint_limits[joint_idx]
                     if origin_raw is not None:
                         # relative: YAM default pose + signed leader travel since startup
-                        target = float(default_arm_pos[joint_idx] + sign * (raw - origin_raw[i]) * rad_per_unit)
+                        target = float(default_arm_pos[joint_idx] + sign * (raw - origin_raw[i]) * rad_per_unit[i])
                         if args_cli.clamp_to_limits:
                             target = min(max(target, float(lo)), float(hi))
                     else:
