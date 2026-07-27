@@ -127,6 +127,15 @@ parser.add_argument(
     "--fixed_joint_value", type=float, default=0.0, help="Constant target (rad) for the fixed YAM joint."
 )
 parser.add_argument("--print_every", type=int, default=60, help="Print loop latency stats every N steps.")
+parser.add_argument(
+    "--debug_actions",
+    action="store_true",
+    default=False,
+    help=(
+        "Also print the raw leader values, the commanded robot_1 arm joint targets and the measured"
+        " joint positions every --print_every steps. Use this to verify the arm is actually tracking."
+    ),
+)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -370,6 +379,10 @@ def main() -> None:
     print("[INFO] Teleoperation running. Press Ctrl+C to stop.")
 
     stats = LatencyStats(args_cli.print_every, read_label)
+    debug_count = 0
+    if args_cli.debug_actions:
+        for name, (lo, hi) in zip(arm_joint_names, joint_limits.tolist()):
+            print(f"[debug] {name} limits: [{lo:7.3f}, {hi:7.3f}] rad")
 
     try:
         with torch.inference_mode():
@@ -391,6 +404,20 @@ def main() -> None:
                 t3 = time.perf_counter()
 
                 stats.update(read_dt=read_dt, step_dt=t3 - t2)
+
+                if args_cli.debug_actions:
+                    debug_count += 1
+                    if debug_count % args_cli.print_every == 0:
+                        raw_vals = [leader_action[k] for k in SO101_LEADER_ARM_KEYS]
+                        cmd = actions[0, :6].tolist()
+                        meas = robot_1.data.joint_pos[0, arm_joint_ids].tolist()
+                        print(
+                            "[debug] leader raw : "
+                            + " ".join(f"{v:7.2f}" for v in raw_vals)
+                            + f"  grip={leader_action[SO101_LEADER_GRIPPER_KEY]:6.2f}"
+                        )
+                        print("[debug] cmd  (rad) : " + " ".join(f"{v:7.3f}" for v in cmd))
+                        print("[debug] meas (rad) : " + " ".join(f"{v:7.3f}" for v in meas))
     except KeyboardInterrupt:
         print("\n[INFO] Teleoperation interrupted by user.")
     finally:
