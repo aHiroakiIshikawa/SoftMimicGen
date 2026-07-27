@@ -78,7 +78,15 @@ parser.add_argument("--print_every", type=int, default=60, help="Print send-rate
 args_cli = parser.parse_args()
 
 try:
-    from lerobot.robots import make_robot_from_config
+    try:
+        # A leader arm is a teleoperator, not a robot. Newer lerobot releases resolve the
+        # device class from the config class name, and SO101LeaderConfig is an alias of
+        # SOLeaderTeleopConfig whose device class is SOLeader -> make_robot_from_config
+        # cannot resolve it and raises "Could not locate device class 'SOLeaderTeleop'".
+        from lerobot.teleoperators import make_teleoperator_from_config as make_leader_from_config
+    except ImportError:
+        # older lerobot releases only exposed the generic robot factory.
+        from lerobot.robots import make_robot_from_config as make_leader_from_config
 
     try:
         # lerobot >= 0.5.2 merged the SO-100/101 leaders into a single ``so_leader`` module.
@@ -98,7 +106,7 @@ def main() -> None:
     # (the gripper stays 0..100). The receiving side maps that range onto the YAM joint limits,
     # so it must NOT be left at the SO-101 default of use_degrees=True.
     leader_cfg = SO101LeaderConfig(port=args_cli.teleop_port, id=args_cli.teleop_id, use_degrees=False)
-    leader = make_robot_from_config(leader_cfg)
+    leader = make_leader_from_config(leader_cfg)
     leader.connect()
     print(f"[INFO] Connected to SO-101 leader arm at {args_cli.teleop_port} (id={args_cli.teleop_id})")
 
