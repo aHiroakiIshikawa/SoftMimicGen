@@ -207,27 +207,6 @@ parser.add_argument(
         " without the rendering cost. Note --enable_cameras is then unnecessary."
     ),
 )
-parser.add_argument(
-    "--sim_dt",
-    type=float,
-    default=None,
-    help=(
-        "Override sim.dt (physics timestep, seconds). The task ships 1/120. Together with"
-        " --decimation this sets how many physics substeps run per env.step, which dominates the"
-        " step time in this deformable-cloth scene. Larger dt is faster but can destabilise the"
-        " cloth solver."
-    ),
-)
-parser.add_argument(
-    "--decimation",
-    type=int,
-    default=None,
-    help=(
-        "Override the number of physics substeps per env.step. The task ships 4, giving a"
-        " 1/120 * 4 = 30 Hz control rate. Keep sim_dt * decimation constant to preserve the control"
-        " rate while cutting cost (e.g. --sim_dt 0.01666667 --decimation 2)."
-    ),
-)
 parser.add_argument("--print_every", type=int, default=60, help="Print loop latency stats every N steps.")
 parser.add_argument(
     "--fallback_joint_range",
@@ -423,18 +402,6 @@ def main() -> None:
     if args_cli.render_interval is not None:
         print(f"[INFO] sim.render_interval: {env_cfg.sim.render_interval} -> {args_cli.render_interval}")
         env_cfg.sim.render_interval = args_cli.render_interval
-
-    if args_cli.sim_dt is not None:
-        print(f"[INFO] sim.dt: {env_cfg.sim.dt} -> {args_cli.sim_dt}")
-        env_cfg.sim.dt = args_cli.sim_dt
-    if args_cli.decimation is not None:
-        print(f"[INFO] decimation: {env_cfg.decimation} -> {args_cli.decimation}")
-        env_cfg.decimation = args_cli.decimation
-    control_dt = env_cfg.sim.dt * env_cfg.decimation
-    print(
-        f"[INFO] Physics: {env_cfg.decimation} substeps of {env_cfg.sim.dt * 1000:.3f} ms"
-        f" -> control period {control_dt * 1000:.2f} ms ({1.0 / control_dt:.1f} Hz real time)"
-    )
 
     if args_cli.disable_cameras:
         # the cameras and their image observations are pure overhead here: this script only needs
